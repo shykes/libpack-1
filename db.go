@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	git "github.com/libgit2/git2go"
+	"gopkg.in/libgit2/git2go.v23"
 )
 
 // DB is a simple git-backed database.
@@ -24,6 +24,55 @@ type DB struct {
 	tree   *git.Tree
 	parent *DB
 	l      sync.RWMutex
+}
+
+type dbCacheTracker struct {
+	dbs map[string]*DB
+	sync.RWMutex
+}
+
+var dbCache *dbCacheTracker
+
+func init() {
+	dbCache = &dbCacheTracker{
+		dbs: make(map[string]*DB),
+	}
+
+}
+
+func (self *dbCacheTracker) get(repo, ref string) (*DB, error) {
+	if !strings.HasSuffix(repo, "/") {
+		repo += "/"
+	}
+
+	key := strings.Join([]string{repo, ref}, ".")
+
+	self.Lock()
+	defer self.Unlock()
+
+	db, ok := self.dbs[key]
+	if ok {
+		return db, nil
+	} else {
+		r, err := git.OpenRepository(repo)
+		if err != nil {
+			return nil, err
+		}
+		db, err := newRepo(r, ref)
+		if err != nil {
+			return nil, err
+		}
+		self.dbs[key] = db
+		return db, nil
+	}
+}
+
+func (self *dbCacheTracker) add(repo, ref string, db *DB) {
+	self.Lock()
+	defer self.Unlock()
+
+	key := strings.Join([]string{repo, ref}, ".")
+	self.dbs[key] = db
 }
 
 func (db *DB) Scope(scope ...string) *DB {
@@ -44,29 +93,17 @@ func (db *DB) Scope(scope ...string) *DB {
 // elements:
 // * A bare git repository at `repo`
 // * A git reference name `ref` (for example "refs/heads/foo")
-// * An optional scope to expose only a subset of the git tree (for example "/myapp/v1")
 func Init(repo, ref string) (*DB, error) {
-	r, err := git.InitRepository(repo, true)
+	_, err := git.InitRepository(repo, true)
 	if err != nil {
 		return nil, err
 	}
-	db, err := newRepo(r, ref)
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
+
+	return dbCache.get(repo, ref)
 }
 
 func Open(repo, ref string) (*DB, error) {
-	r, err := git.OpenRepository(repo)
-	if err != nil {
-		return nil, err
-	}
-	db, err := newRepo(r, ref)
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
+	return dbCache.get(repo, ref)
 }
 
 func newRepo(repo *git.Repository, ref string) (*DB, error) {
@@ -87,11 +124,11 @@ func newRepo(repo *git.Repository, ref string) (*DB, error) {
 // of the libgit2 C bindings.
 func (db *DB) Free() {
 	db.l.Lock()
+	defer db.l.Unlock()
 	db.repo.Free()
 	if db.commit != nil {
 		db.commit.Free()
 	}
-	db.l.Unlock()
 }
 
 // Head returns the id of the latest commit
@@ -116,11 +153,11 @@ func (db *DB) Repo() *git.Repository {
 }
 
 func (db *DB) Tree() (*git.Tree, error) {
-	return TreeScope(db.repo, db.tree, db.scope)
+	return treeScope(db.repo, db.tree, db.scope)
 }
 
 func (db *DB) Dump(dst io.Writer) error {
-	return TreeDump(db.repo, db.tree, path.Join(db.scope, "/"), dst)
+	return treeDump(db.repo, db.tree, path.Join(db.scope, "/"), dst)
 }
 
 // AddDB copies the contents of src into db at prefix key.
@@ -154,7 +191,7 @@ func (db *DB) Add(key string, obj interface{}) error {
 }
 
 func (db *DB) Walk(key string, h func(string, git.Object) error) error {
-	return TreeWalk(db.repo, db.tree, path.Join(db.scope, key), h)
+	return treeWalk(db.repo, db.tree, path.Join(db.scope, key), h)
 }
 
 // Update looks up the value of the database's reference, and changes
@@ -163,7 +200,8 @@ func (db *DB) Walk(key string, h func(string, git.Object) error) error {
 func (db *DB) Update() error {
 	db.l.Lock()
 	defer db.l.Unlock()
-	tip, err := db.repo.LookupReference(db.ref)
+	tip, err := db.repo.References.Lookup(db.ref)
+
 	if err != nil {
 		db.commit = nil
 		return nil
@@ -214,7 +252,7 @@ func (db *DB) Get(key string) (string, error) {
 	if db.parent != nil {
 		return db.parent.Get(path.Join(db.scope, key))
 	}
-	return TreeGet(db.repo, db.tree, path.Join(db.scope, key))
+	return treeGet(db.repo, db.tree, path.Join(db.scope, key))
 }
 
 // Set writes the specified value in a Git blob, and updates the
@@ -246,7 +284,7 @@ func (db *DB) SetStream(key string, src io.Reader) error {
 	return db.Set(key, buf.String())
 }
 
-func TreePath(p string) string {
+func treePath(p string) string {
 	p = path.Clean(p)
 	if p == "/" || p == "." {
 		return "/"
@@ -260,7 +298,7 @@ func TreePath(p string) string {
 // List returns a list of object names at the subtree `key`.
 // If there is no subtree at `key`, an error is returned.
 func (db *DB) List(key string) ([]string, error) {
-	return TreeList(db.repo, db.tree, path.Join(db.scope, key))
+	return treeList(db.repo, db.tree, path.Join(db.scope, key))
 }
 
 // Commit atomically stores all database changes since the last commit
@@ -276,7 +314,7 @@ func (db *DB) Commit(msg string) error {
 		// Nothing to commit
 		return nil
 	}
-	commit, err := CommitToRef(db.repo, db.tree, db.commit, db.ref, msg)
+	commit, err := commitToRef(db.repo, db.tree, db.commit, db.ref, msg)
 	if err != nil {
 		return err
 	}
@@ -287,7 +325,7 @@ func (db *DB) Commit(msg string) error {
 	return nil
 }
 
-func CommitToRef(r *git.Repository, tree *git.Tree, parent *git.Commit, refname, msg string) (*git.Commit, error) {
+func commitToRef(r *git.Repository, tree *git.Tree, parent *git.Commit, refname, msg string) (*git.Commit, error) {
 	// Retry loop in case of conflict
 	// FIXME: use a custom inter-process lock as a first attempt for performance
 	var (
@@ -417,16 +455,36 @@ func (db *DB) Pull(url, ref string) error {
 		ref = db.ref
 	}
 	refspec := fmt.Sprintf("%s:%s", ref, db.ref)
-	fmt.Printf("Creating anonymous remote url=%s refspec=%s\n", url, refspec)
-	remote, err := db.repo.CreateAnonymousRemote(url, refspec)
+	remote, err := db.repo.Remotes.CreateAnonymous(url)
 	if err != nil {
 		return err
 	}
 	defer remote.Free()
-	if err := remote.Fetch(nil, nil, fmt.Sprintf("libpack.pull %s %s", url, refspec)); err != nil {
+
+	db.rollbackUncommitted()
+	if err := remote.Fetch([]string{refspec}, &git.FetchOptions{}, fmt.Sprintf("libpack.pull %s %s", url, refspec)); err != nil {
 		return err
 	}
 	return db.Update()
+}
+
+func (db *DB) rollbackUncommitted() error {
+	tip, err := db.repo.References.Lookup(db.ref)
+	if err != nil {
+		return err
+	}
+	tipCommit, err := db.repo.LookupCommit(tip.Target())
+	if err != nil {
+		return err
+	}
+	cleanTree, err := tipCommit.Tree()
+	if err != nil {
+		return err
+	}
+	db.tree.Free()
+	db.tree = cleanTree
+
+	return nil
 }
 
 // Push uploads the committed contents of the db at the specified url and
@@ -438,21 +496,14 @@ func (db *DB) Push(url, ref string) error {
 	// The '+' prefix sets force=true,
 	// so the remote ref is created if it doesn't exist.
 	refspec := fmt.Sprintf("+%s:%s", db.ref, ref)
-	remote, err := db.repo.CreateAnonymousRemote(url, refspec)
+
+	remote, err := db.repo.Remotes.CreateAnonymous(url)
 	if err != nil {
 		return err
 	}
-	defer remote.Free()
-	push, err := remote.NewPush()
+	err = remote.Push([]string{refspec}, &git.PushOptions{})
 	if err != nil {
 		return fmt.Errorf("git_push_new: %v", err)
-	}
-	defer push.Free()
-	if err := push.AddRefspec(refspec); err != nil {
-		return fmt.Errorf("git_push_refspec_add: %v", err)
-	}
-	if err := push.Finish(); err != nil {
-		return fmt.Errorf("git_push_finish: %v", err)
 	}
 	return nil
 }
@@ -506,7 +557,7 @@ func (db *DB) CheckoutUncommitted(dir string) error {
 	if db.tree == nil {
 		return fmt.Errorf("no tree")
 	}
-	tree, err := TreeScope(db.repo, db.tree, db.scope)
+	tree, err := treeScope(db.repo, db.tree, db.scope)
 	if err != nil {
 		return err
 	}
@@ -601,7 +652,7 @@ func lookupBlob(r *git.Repository, id *git.Oid) (*git.Blob, error) {
 // as a Commit object. If the reference does not exist, or if object is
 // not a commit, nil is returned. Other errors cannot be detected.
 func lookupTip(r *git.Repository, refname string) *git.Commit {
-	ref, err := r.LookupReference(refname)
+	ref, err := r.References.Lookup(refname)
 	if err != nil {
 		return nil
 	}

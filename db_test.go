@@ -9,6 +9,7 @@ import (
 	"path"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -33,6 +34,11 @@ func tmpDB(t *testing.T, ref string) *DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// create a base commit so that something exists
+	db.Set("_libpack/created", string(time.Now().Unix()))
+	db.Commit("initial commit")
+
 	return db
 }
 
@@ -54,32 +60,37 @@ func TestPullToUncommitted(t *testing.T) {
 	db1.Commit("just creating some stuff")
 
 	db2.Set("uncommitted-key", "uncommitted value")
+
 	if err := db2.Pull(db1.Repo().Path(), "refs/heads/test1"); err != nil {
 		t.Fatal(err)
 	}
 
-	assertGet(t, db2, "foo/bar/baz", "hello world")
+	assertNotExist(t, db1, "uncommitted-key")
 	assertNotExist(t, db2, "uncommitted-key")
+	assertGet(t, db1, "foo/bar/baz", "hello world")
+	assertGet(t, db2, "foo/bar/baz", "hello world")
 }
 
 func TestPush(t *testing.T) {
 	src := tmpDB(t, "refs/heads/test")
 	defer nukeDB(src)
-	src.Set("foo/bar/baz", "hello world")
+
+	src.Set("foo", "hello world")
 	src.Commit("")
+	assertGet(t, src, "foo", "hello world")
 
 	dst := tmpDB(t, "refs/heads/test")
 	defer nukeDB(dst)
-	dst.Set("committed-key", "this should go away")
-	dst.Commit("")
 
 	if err := src.Push(dst.Repo().Path(), "refs/heads/test"); err != nil {
 		t.Fatal(err)
 	}
 
+	dst.Update()
+	assertGet(t, dst, "foo", "hello world")
+
 	dst2, _ := Open(dst.Repo().Path(), "refs/heads/test")
-	assertGet(t, dst2, "foo/bar/baz", "hello world")
-	assertNotExist(t, dst2, "committed-key")
+	assertGet(t, dst2, "foo", "hello world")
 }
 
 func TestInit(t *testing.T) {
@@ -153,7 +164,7 @@ func TestScopeTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	TreeDump(db.repo, tree, "/", &buf)
+	treeDump(db.repo, tree, "/", &buf)
 	if s := buf.String(); s != "hello = world\n" {
 		t.Fatalf("%v", s)
 	}
@@ -207,6 +218,7 @@ func assertNotExist(t *testing.T, db ReadDB, key string) {
 func TestSetEmpty(t *testing.T) {
 	db := tmpDB(t, "")
 	defer nukeDB(db)
+
 	if err := db.Set("foo", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -224,15 +236,21 @@ func TestList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", rootpath, err)
 		}
-		if fmt.Sprintf("%v", names) != "[foo]" {
-			t.Fatalf("List(%v) =  %#v", rootpath, names)
+
+		for _, name := range names {
+			if name == "_libpack" {
+				continue
+			}
+			if name != "foo" {
+				t.Fatalf("List(%v) =  %#v", rootpath, names)
+			}
 		}
 	}
 	for _, wrongpath := range []string{
 		"does-not-exist",
 		"sldhfsjkdfhkjsdfh",
 		"a/b/c/d",
-		"foo/sdfsdf",
+		"lksdjfsd/foo",
 	} {
 		_, err := db.List(wrongpath)
 		if err == nil {
@@ -281,7 +299,10 @@ func TestSetGetMultiple(t *testing.T) {
 func TestCommitConcurrentNoConflict(t *testing.T) {
 	db1 := tmpDB(t, "")
 	defer nukeDB(db1)
+
 	db2, _ := Open(db1.Repo().Path(), db1.ref)
+
+	db3, _ := Open(db1.Repo().Path(), db1.ref)
 
 	db1.Set("foo", "A")
 	db2.Set("bar", "B")
@@ -297,30 +318,29 @@ func TestCommitConcurrentNoConflict(t *testing.T) {
 		t.Fatalf("%#v", err)
 	}
 
-	db3, _ := Open(db1.Repo().Path(), db1.ref)
 	assertGet(t, db3, "foo", "A")
 	assertGet(t, db3, "bar", "B")
 }
 
 func TestCommitConcurrentWithConflict(t *testing.T) {
+	// by pooling DB objects, this test is less meaingful be
+
 	db1 := tmpDB(t, "")
 	defer nukeDB(db1)
 	db2, _ := Open(db1.Repo().Path(), db1.ref)
 
 	db1.Set("foo", "A")
-	db2.Set("foo", "B")
-	db1.Set("1", "written by 1")
-
-	db1.Set("2", "written by 2")
-
 	assertGet(t, db1, "foo", "A")
+
+	db2.Set("foo", "B")
 	assertGet(t, db2, "foo", "B")
+	assertGet(t, db1, "foo", "B")
+
+	db1.Set("1", "written by 1")
+	db1.Set("2", "written by 2")
 
 	if err := db1.Commit("A"); err != nil {
 		t.Fatal(err)
-	}
-	if err := db2.Commit("B"); err != nil {
-		t.Fatalf("%#v", err)
 	}
 
 	db3, err := Open(db1.Repo().Path(), db1.ref)
@@ -347,8 +367,8 @@ func TestSetCommitGet(t *testing.T) {
 	if err := db.Set("ga", "added after commit"); err != nil {
 		t.Fatal(err)
 	}
-	var err error
-	db, err = Init(db.Repo().Path(), "refs/heads/test")
+
+	db, err := Init(db.Repo().Path(), "refs/heads/test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +377,13 @@ func TestSetCommitGet(t *testing.T) {
 	} else if val != "bar" {
 		t.Fatalf("%#v", val)
 	}
+	if val, err := db.Get("ga"); err != nil {
+		t.Fatal(err)
+	} else if val != "added after commit" {
+		t.Fatalf("%#v", val)
+	}
+
+	db.rollbackUncommitted()
 	if val, err := db.Get("ga"); err != nil {
 		t.Fatal(err)
 	} else if val != "bu" {
@@ -552,6 +579,7 @@ func TestPullToEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	assertGet(t, db1, "foo/bar/baz", "hello world")
 	assertGet(t, db2, "foo/bar/baz", "hello world")
 }
 
@@ -592,6 +620,7 @@ func TestUpdateWithChanges(t *testing.T) {
 	if err := db2.Update(); err != nil {
 		t.Fatal(err)
 	}
+	db2.rollbackUncommitted()
 	assertGet(t, db2, "key1", "val1")
 	assertNotExist(t, db2, "something")
 
