@@ -6,7 +6,7 @@ import (
 	"os"
 	"path"
 
-	git "github.com/libgit2/git2go"
+	"gopkg.in/libgit2/git2go.v23"
 )
 
 // treeAdd creates a new Git tree by adding a new object
@@ -49,7 +49,7 @@ func treeAdd(repo *git.Repository, tree *git.Tree, key string, valueId *git.Oid,
 	if valueId == nil {
 		return tree, nil
 	}
-	key = TreePath(key)
+	key = treePath(key)
 	base, leaf := path.Split(key)
 	o, err := repo.Lookup(valueId)
 	if err != nil {
@@ -95,7 +95,7 @@ func treeAdd(repo *git.Repository, tree *git.Tree, key string, valueId *git.Oid,
 		var subTree *git.Tree
 		var oldSubTree *git.Tree
 		if tree != nil {
-			oldSubTree, err = TreeScope(repo, tree, leaf)
+			oldSubTree, err = treeScope(repo, tree, leaf)
 			// FIXME: distinguish "no such key" error (which
 			// FIXME: distinguish a non-existing previous tree (continue with oldTree==nil)
 			// from other errors (abort and return an error)
@@ -142,11 +142,11 @@ func treeAdd(repo *git.Repository, tree *git.Tree, key string, valueId *git.Oid,
 	return treeAdd(repo, tree, base, subtree.Id(), merge)
 }
 
-func TreeGet(r *git.Repository, t *git.Tree, key string) (string, error) {
+func treeGet(r *git.Repository, t *git.Tree, key string) (string, error) {
 	if t == nil {
 		return "", os.ErrNotExist
 	}
-	key = TreePath(key)
+	key = treePath(key)
 	e, err := t.EntryByPath(key)
 	if err != nil {
 		return "", err
@@ -160,11 +160,11 @@ func TreeGet(r *git.Repository, t *git.Tree, key string) (string, error) {
 
 }
 
-func TreeList(r *git.Repository, t *git.Tree, key string) ([]string, error) {
+func treeList(r *git.Repository, t *git.Tree, key string) ([]string, error) {
 	if t == nil {
 		return []string{}, nil
 	}
-	subtree, err := TreeScope(r, t, key)
+	subtree, err := treeScope(r, t, key)
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +180,11 @@ func TreeList(r *git.Repository, t *git.Tree, key string) ([]string, error) {
 	return entries, nil
 }
 
-func TreeWalk(r *git.Repository, t *git.Tree, key string, h func(string, git.Object) error) error {
+func treeWalk(r *git.Repository, t *git.Tree, key string, h func(string, git.Object) error) error {
 	if t == nil {
 		return fmt.Errorf("no tree to walk")
 	}
-	subtree, err := TreeScope(r, t, key)
+	subtree, err := treeScope(r, t, key)
 	if err != nil {
 		return err
 	}
@@ -211,8 +211,8 @@ func TreeWalk(r *git.Repository, t *git.Tree, key string, h func(string, git.Obj
 	return nil
 }
 
-func TreeDump(r *git.Repository, t *git.Tree, key string, dst io.Writer) error {
-	return TreeWalk(r, t, key, func(key string, obj git.Object) error {
+func treeDump(r *git.Repository, t *git.Tree, key string, dst io.Writer) error {
+	return treeWalk(r, t, key, func(key string, obj git.Object) error {
 		if _, isTree := obj.(*git.Tree); isTree {
 			fmt.Fprintf(dst, "%s/\n", key)
 		} else if blob, isBlob := obj.(*git.Blob); isBlob {
@@ -222,11 +222,11 @@ func TreeDump(r *git.Repository, t *git.Tree, key string, dst io.Writer) error {
 	})
 }
 
-func TreeScope(repo *git.Repository, tree *git.Tree, name string) (*git.Tree, error) {
+func treeScope(repo *git.Repository, tree *git.Tree, name string) (*git.Tree, error) {
 	if tree == nil {
 		return nil, fmt.Errorf("tree undefined")
 	}
-	name = TreePath(name)
+	name = treePath(name)
 	if name == "/" {
 		// Allocate a new Tree object so that the caller
 		// can always call Free() on the result

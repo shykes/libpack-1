@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
-	git "github.com/libgit2/git2go"
+	"gopkg.in/libgit2/git2go.v23"
 )
 
 // A Pipeline defines a sequence of operations which can be run
@@ -220,7 +220,7 @@ func (t *Pipeline) Run() (*git.Tree, error) {
 			if !ok {
 				return nil, fmt.Errorf("invalid argument")
 			}
-			return TreeScope(t.repo, in, key)
+			return treeScope(t.repo, in, key)
 		}
 	}
 	return nil, fmt.Errorf("invalid op: %v", t.op)

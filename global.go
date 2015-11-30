@@ -6,15 +6,15 @@ import (
 	"strconv"
 	"strings"
 
-	git "github.com/libgit2/git2go"
+	"gopkg.in/libgit2/git2go.v23"
 )
 
 func getAnnotation(db *DB, name string) (string, error) {
-	return db.Get(MkAnnotation(name))
+	return db.Get(mkAnnotation(name))
 }
 
 func setAnnotation(db *DB, name, value string) error {
-	return db.Set(MkAnnotation(name), value)
+	return db.Set(mkAnnotation(name), value)
 }
 
 func walkAnnotations(db *DB, h func(name, value string)) error {
@@ -23,7 +23,7 @@ func walkAnnotations(db *DB, h func(name, value string)) error {
 		if !isBlob {
 			return nil
 		}
-		targetPath, err := ParseAnnotation(k)
+		targetPath, err := parseAnnotation(k)
 		if err != nil {
 			return err
 		}
@@ -32,16 +32,16 @@ func walkAnnotations(db *DB, h func(name, value string)) error {
 	})
 }
 
-func MkAnnotation(target string) string {
-	target = TreePath(target)
+func mkAnnotation(target string) string {
+	target = treePath(target)
 	if target == "/" {
 		return "0"
 	}
 	return fmt.Sprintf("%d/%s", strings.Count(target, "/")+1, target)
 }
 
-func ParseAnnotation(annot string) (target string, err error) {
-	annot = TreePath(annot)
+func parseAnnotation(annot string) (target string, err error) {
+	annot = treePath(annot)
 	parts := strings.Split(annot, "/")
 	if len(parts) == 0 {
 		return "", fmt.Errorf("invalid annotation path")

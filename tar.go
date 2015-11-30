@@ -7,9 +7,9 @@ import (
 	"os"
 	"path"
 
-	git "github.com/libgit2/git2go"
+	"archive/tar"
 
-	"github.com/dotcloud/docker/vendor/src/code.google.com/p/go/src/pkg/archive/tar"
+	"gopkg.in/libgit2/git2go.v23"
 )
 
 const (
@@ -88,7 +88,7 @@ func (db *DB) SetTar(src io.Reader) error {
 // This path will be used to store and retrieve the tar header encoding the metadata
 // for the corresponding file.
 func metaPath(name string) string {
-	return path.Join(MetaTree, MkAnnotation(name))
+	return path.Join(MetaTree, mkAnnotation(name))
 }
 
 func headerReader(hdr *tar.Header) (io.Reader, error) {

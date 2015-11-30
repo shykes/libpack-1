@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	git "github.com/libgit2/git2go"
+	"gopkg.in/libgit2/git2go.v23"
 )
 
 func tmpRepo(t *testing.T) *git.Repository {
